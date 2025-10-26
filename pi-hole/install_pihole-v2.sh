@@ -361,31 +361,77 @@ if [[ "$PORT_CHANGE" == "yes" ]]; then
         cp "$TOML_FILE" "$BACKUP_FILE"
         log "${BLUE}Created backup: $BACKUP_FILE${NC}"
         
-        # Change port in the [webserver] section
-        if grep -q 'port = ' "$TOML_FILE"; then
-            sed -i '/^\[webserver\]/,/^\[/ s/^port = .*/port = "8080o,443os,[::]:8080o,[::]:443os"/' "$TOML_FILE"
+        # Show current port setting
+        CURRENT_PORT=$(grep 'port = "' "$TOML_FILE" | grep -v '^#')
+        log "${BLUE}Current setting:${NC}"
+        log "  $CURRENT_PORT"
+        
+        # Change port - match exact format: port = "80o,443os,[::]:80o,[::]:443os"
+        # Only change the non-commented port line
+        if grep -q 'port = "80o,443os,\[::\]:80o,\[::\]:443os"' "$TOML_FILE"; then
+            # Use sed to replace 80 with 8080 in the port line
+            sed -i 's/port = "80o,443os,\[::\]:80o,\[::\]:443os"/port = "8080o,443os,[::]:8080o,[::]:443os"/' "$TOML_FILE"
             
-            log "${YELLOW}Restarting Pi-hole FTL service...${NC}"
-            systemctl restart pihole-FTL
-            sleep 3
+            # Verify the change
+            NEW_PORT=$(grep 'port = "' "$TOML_FILE" | grep -v '^#')
+            log ""
+            log "${BLUE}New setting:${NC}"
+            log "  $NEW_PORT"
             
-            if systemctl is-active --quiet pihole-FTL; then
-                log "${GREEN}✓ Port changed successfully!${NC}"
-                log "${GREEN}Admin interface: http://$CHOSEN_IP:8080/admin${NC}"
-            else
-                log "${RED}✗ FTL failed to restart. Restoring backup...${NC}"
-                mv "$BACKUP_FILE" "$TOML_FILE"
+            if grep -q 'port = "8080o,443os,\[::\]:8080o,\[::\]:443os"' "$TOML_FILE"; then
+                log ""
+                log "${GREEN}✓ Port setting updated in config file${NC}"
+                
+                log "${YELLOW}Restarting Pi-hole FTL service...${NC}"
                 systemctl restart pihole-FTL
-                log "${YELLOW}Backup restored. Manual configuration may be needed.${NC}"
+                sleep 5
+                
+                if systemctl is-active --quiet pihole-FTL; then
+                    log "${GREEN}✓ FTL service restarted successfully!${NC}"
+                    
+                    # Test if port 8080 is now listening
+                    sleep 2
+                    if ss -tulpn | grep -q ":8080"; then
+                        log "${GREEN}✓ Port 8080 is now active!${NC}"
+                        log "${GREEN}✓ Admin interface: http://$CHOSEN_IP:8080/admin${NC}"
+                        PORT_CHANGE_SUCCESS="yes"
+                    else
+                        log "${YELLOW}⚠ Port 8080 not detected yet. Checking ports...${NC}"
+                        ss -tulpn | grep -E ":(80|8080)" | tee -a "$LOG_FILE"
+                        log "${YELLOW}Give it a few more seconds and try accessing the web interface.${NC}"
+                        PORT_CHANGE_SUCCESS="partial"
+                    fi
+                else
+                    log "${RED}✗ FTL failed to restart. Restoring backup...${NC}"
+                    mv "$BACKUP_FILE" "$TOML_FILE"
+                    systemctl restart pihole-FTL
+                    sleep 3
+                    log "${YELLOW}Backup restored. Check: journalctl -u pihole-FTL -n 50${NC}"
+                    PORT_CHANGE_SUCCESS="no"
+                fi
+            else
+                log "${RED}✗ Port change verification failed. File may not have changed.${NC}"
+                log "Current content:"
+                grep 'port = ' "$TOML_FILE" | tee -a "$LOG_FILE"
+                PORT_CHANGE_SUCCESS="no"
             fi
         else
-            log "${RED}✗ Could not find port setting in pihole.toml${NC}"
-            log "You may need to configure the port manually."
+            log "${RED}✗ Could not find expected port line in pihole.toml${NC}"
+            log "Looking for: port = \"80o,443os,[::]:80o,[::]:443os\""
+            log ""
+            log "Found in file:"
+            grep 'port = ' "$TOML_FILE" | tee -a "$LOG_FILE"
+            log ""
+            log "Manual configuration required."
+            PORT_CHANGE_SUCCESS="no"
         fi
     else
-        log "${RED}✗ pihole.toml not found at expected location.${NC}"
+        log "${RED}✗ pihole.toml not found at expected location: $TOML_FILE${NC}"
         log "Manual port change required. Check Pi-hole v6 documentation."
+        PORT_CHANGE_SUCCESS="no"
     fi
+else
+    PORT_CHANGE_SUCCESS="no"
 fi
 
 # --- Step 9: Set/Reset Admin Password ---
@@ -438,13 +484,25 @@ log "${GREEN}           Pi-hole Installation Complete!                   ${NC}"
 log "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 log ""
 log "📍 Access your admin interface:"
-if [[ "$PORT_CHANGE" == "yes" ]]; then
+
+# Determine which port to show based on actual configuration
+if [[ "$PORT_CHANGE" == "yes" && "$PORT_CHANGE_SUCCESS" == "yes" ]]; then
     log "   ${BLUE}http://$CHOSEN_IP:8080/admin${NC}"
     log "   ${BLUE}http://pi.hole:8080/admin${NC}"
+    ADMIN_PORT="8080"
+elif [[ "$PORT_CHANGE" == "yes" && "$PORT_CHANGE_SUCCESS" == "partial" ]]; then
+    log "   ${YELLOW}Port change attempted but status unclear.${NC}"
+    log "   Try: ${BLUE}http://$CHOSEN_IP:80/admin${NC}"
+    log "   Or:  ${BLUE}http://$CHOSEN_IP:8080/admin${NC}"
+    ADMIN_PORT="80 or 8080"
 else
     log "   ${BLUE}http://$CHOSEN_IP/admin${NC}"
     log "   ${BLUE}http://pi.hole/admin${NC}"
+    ADMIN_PORT="80"
 fi
+
+log ""
+log "Your Admin Password: Check the output above or reset with: ${BLUE}pihole -a -p${NC}"
 
 # Re-enable WiFi if it was disabled
 if [ "$WIFI_DISABLED" = true ]; then
@@ -473,14 +531,31 @@ log "═════════════════════════
 log ""
 log "If admin page is inaccessible:"
 log "  • Check Pi-hole FTL status: ${BLUE}sudo systemctl status pihole-FTL${NC}"
-log "  • View logs: ${BLUE}pihole -t${NC}"
-log "  • Check port conflicts: ${BLUE}sudo ss -tulpn | grep :80${NC}"
+log "  • View live logs: ${BLUE}pihole -t${NC}"
+log "  • Check what's listening: ${BLUE}sudo ss -tulpn | grep -E ':(80|8080)'${NC}"
+log "  • Check FTL logs: ${BLUE}sudo journalctl -u pihole-FTL -n 50${NC}"
+
 if [[ "$PORT_CHANGE" == "yes" ]]; then
-    log "  • Verify port in: ${BLUE}/etc/pihole/pihole.toml${NC}"
+    log ""
+    log "Port 8080 configuration:"
+    log "  • Config file: ${BLUE}/etc/pihole/pihole.toml${NC}"
+    log "  • Check current port: ${BLUE}grep -A 5 '\\[webserver\\]' /etc/pihole/pihole.toml | grep port${NC}"
+    
+    if [[ "$PORT_CHANGE_SUCCESS" != "yes" ]]; then
+        log ""
+        log "${YELLOW}To manually change port to 8080:${NC}"
+        log "  1. Edit: ${BLUE}sudo nano /etc/pihole/pihole.toml${NC}"
+        log "  2. Find the [webserver] section"
+        log "  3. Change port line to:"
+        log "     ${BLUE}port = \"8080o,443os,[::]:8080o,[::]:443os\"${NC}"
+        log "  4. Save and restart: ${BLUE}sudo systemctl restart pihole-FTL${NC}"
+    fi
 fi
+
 log ""
 log "If DNS not working on devices:"
 log "  • Test Pi-hole DNS: ${BLUE}dig @$CHOSEN_IP google.com${NC}"
+log "  • Test from device: ${BLUE}nslookup google.com $CHOSEN_IP${NC}"
 log "  • Check device DNS settings"
 log "  • Verify router DNS configuration"
 log "  • Ensure static IP for ${BLUE}$CHOSEN_IFACE${NC} is configured"
