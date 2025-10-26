@@ -41,4 +41,4 @@ The goal of this project is to simplify the official Pi-hole installation by add
 After installing Raspberry Pi OS Lite and connecting to your Pi via SSH, run this single command. It will download the installer script and automatically begin the guided setup.
 
 ```bash
-curl -sSL [https://raw.githubusercontent.com/YourUsername/pi-bootstrap/main/pihole/install_pihole.sh](https://raw.githubusercontent.com/YourUsername/pi-bootstrap/main/pihole/install_pihole.sh) | sudo bash
+wget -O - https://raw.githubusercontent.com/Techposts/Pi-Installers/main/pi-hole/install_pihole.sh | sudo bash
