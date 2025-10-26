@@ -83,48 +83,94 @@ log "${GREEN}✓ System requirements check passed.${NC}"
 log ""
 log "${GREEN}--- Step 3: Network Interface Detection ---${NC}"
 
-# Get all interfaces except loopback
-ALL_INTERFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "lo")
-ACTIVE_INTERFACES=$(ip addr show | grep "state UP" | awk -F': ' '{print $2}')
-INTERFACE_COUNT=$(echo "$ACTIVE_INTERFACES" | grep -v "^$" | wc -l)
+# Get all interfaces except loopback with their IPs
+INTERFACE_LIST=$(ip -4 addr show | grep -E "^[0-9]+: " -A 2 | grep -v "lo:" | awk '/^[0-9]+:/ {iface=$2; gsub(/:/, "", iface)} /inet / {print iface, $2}' | sed 's/\/.*$//')
+
+INTERFACE_COUNT=$(echo "$INTERFACE_LIST" | grep -v "^$" | wc -l)
 
 log "Active network interfaces detected: ${BLUE}$INTERFACE_COUNT${NC}"
-echo "$ACTIVE_INTERFACES" | nl | tee -a "$LOG_FILE"
+log ""
+
+# Display interfaces with their IPs
+COUNTER=1
+while IFS= read -r line; do
+    IFACE=$(echo "$line" | awk '{print $1}')
+    IP=$(echo "$line" | awk '{print $2}')
+    
+    # Identify interface type
+    if [[ "$IFACE" == eth* ]] || [[ "$IFACE" == enp* ]]; then
+        TYPE="(Ethernet)"
+    elif [[ "$IFACE" == wlan* ]]; then
+        TYPE="(WiFi)"
+    else
+        TYPE=""
+    fi
+    
+    log "${COUNTER}. ${BLUE}${IFACE}${NC} ${TYPE}: ${GREEN}${IP}${NC}"
+    COUNTER=$((COUNTER + 1))
+done <<< "$INTERFACE_LIST"
 
 # Check for multiple active interfaces
 if [ "$INTERFACE_COUNT" -gt 1 ]; then
     log ""
     log "${YELLOW}IMPORTANT: Multiple active network interfaces detected!${NC}"
     log ""
-    log "If you're using a USB LAN dongle + WiFi:"
-    log "  ${GREEN}•${NC} Each interface has its own IP address"
-    log "  ${GREEN}•${NC} Pi-hole installer will ask which interface to use"
-    log "  ${GREEN}•${NC} Choose the interface you want Pi-hole on (usually ethernet/USB)"
+    log "Which interface will you use for Pi-hole?"
     log ""
-    log "${YELLOW}Do you want to disable WiFi to simplify installation?${NC}"
-    log "  ${GREEN}No (recommended):${NC} Keep WiFi active, select interface during install"
-    log "  ${RED}Yes:${NC} Disable WiFi now (can re-enable later)"
-    log ""
-    read -p "Disable WiFi? (y/n): " disable_wifi
+    read -p "Enter interface name (e.g., eth0, wlan0): " CHOSEN_IFACE
     
-    if [[ "$disable_wifi" == "y" || "$disable_wifi" == "Y" ]]; then
-        log "${YELLOW}Disabling WiFi...${NC}"
-        rfkill block wifi
-        systemctl stop wpa_supplicant
-        log "${GREEN}✓ WiFi disabled. You can re-enable after installation.${NC}"
+    # Validate interface exists
+    if ! echo "$INTERFACE_LIST" | grep -q "^$CHOSEN_IFACE "; then
+        log "${RED}Error: Interface '$CHOSEN_IFACE' not found.${NC}"
+        log "Available interfaces:"
+        echo "$INTERFACE_LIST" | awk '{print "  - " $1}'
+        exit 1
+    fi
+    
+    # Get IP for chosen interface
+    CURRENT_IP=$(echo "$INTERFACE_LIST" | grep "^$CHOSEN_IFACE " | awk '{print $2}')
+    
+    log ""
+    log "${GREEN}✓ Selected interface: ${BLUE}$CHOSEN_IFACE${NC} with IP: ${BLUE}$CURRENT_IP${NC}"
+    
+    # Offer to disable other interfaces if WiFi is not chosen
+    if [[ "$CHOSEN_IFACE" != wlan* ]]; then
+        WIFI_IFACE=$(echo "$INTERFACE_LIST" | grep "wlan" | awk '{print $1}' | head -n1)
+        if [ ! -z "$WIFI_IFACE" ]; then
+            log ""
+            log "${YELLOW}WiFi interface detected: $WIFI_IFACE${NC}"
+            log "Disabling WiFi can prevent confusion during installation."
+            log ""
+            read -p "Disable WiFi during installation? (y/n): " disable_wifi
+            
+            if [[ "$disable_wifi" == "y" || "$disable_wifi" == "Y" ]]; then
+                log "${YELLOW}Disabling WiFi...${NC}"
+                rfkill block wifi 2>/dev/null
+                systemctl stop wpa_supplicant 2>/dev/null
+                log "${GREEN}✓ WiFi disabled. You can re-enable after installation.${NC}"
+                WIFI_DISABLED=true
+            else
+                log "${GREEN}✓ WiFi will remain active. Remember to select $CHOSEN_IFACE during Pi-hole installation.${NC}"
+                WIFI_DISABLED=false
+            fi
+        fi
     else
-        log "${GREEN}✓ WiFi will remain active. Select your preferred interface during Pi-hole installation.${NC}"
+        WIFI_DISABLED=false
     fi
 else
-    log "${GREEN}✓ Single network interface detected. No conflicts expected.${NC}"
+    # Single interface - get its name and IP
+    CHOSEN_IFACE=$(echo "$INTERFACE_LIST" | awk '{print $1}')
+    CURRENT_IP=$(echo "$INTERFACE_LIST" | awk '{print $2}')
+    log "${GREEN}✓ Single network interface detected: ${BLUE}$CHOSEN_IFACE${NC} (${BLUE}$CURRENT_IP${NC})${NC}"
+    WIFI_DISABLED=false
 fi
 
 # --- Step 4: Static IP Check & Warning ---
 log ""
 log "${GREEN}--- Step 4: Static IP Verification ---${NC}"
 
-CURRENT_IP=$(hostname -I | awk '{print $1}')
-log "Current IP Address: ${BLUE}$CURRENT_IP${NC}"
+log "Selected Interface: ${BLUE}$CHOSEN_IFACE${NC}"
+log "IP Address: ${BLUE}$CURRENT_IP${NC}"
 log ""
 
 # Check if using DHCP
@@ -235,7 +281,8 @@ log ""
 log "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 log "${GREEN}Pre-Installation Summary${NC}"
 log "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-log "Current IP: ${BLUE}$CURRENT_IP${NC}"
+log "Selected Interface: ${BLUE}$CHOSEN_IFACE${NC}"
+log "IP Address: ${BLUE}$CURRENT_IP${NC}"
 log "Active Interfaces: ${BLUE}$INTERFACE_COUNT${NC}"
 log "Port 80 Available: ${BLUE}$([ -z "$(ss -tulpn | grep ':80 ')" ] && echo 'Yes' || echo 'No (will use 8080)')${NC}"
 log "Static IP Configured: ${BLUE}Confirmed${NC}"
@@ -353,12 +400,20 @@ log "${GREEN}══════════════════════�
 log ""
 log "📍 Access your admin interface:"
 if [[ "$PORT_CHANGE" == "yes" ]]; then
-    log "   ${BLUE}http://$CURRENT_IP:8080/admin${NC}"
+    log "   ${BLUE}http://$CURRENT_IP:8080/admin${NC} (on $CHOSEN_IFACE)"
     log "   ${BLUE}http://pi.hole:8080/admin${NC}"
 else
-    log "   ${BLUE}http://$CURRENT_IP/admin${NC}"
+    log "   ${BLUE}http://$CURRENT_IP/admin${NC} (on $CHOSEN_IFACE)"
     log "   ${BLUE}http://pi.hole/admin${NC}"
 fi
+
+# Re-enable WiFi if it was disabled
+if [ "$WIFI_DISABLED" = true ]; then
+    log ""
+    log "${YELLOW}Note: WiFi was disabled during installation.${NC}"
+    log "To re-enable WiFi, run: ${BLUE}sudo rfkill unblock wifi && sudo systemctl start wpa_supplicant${NC}"
+fi
+
 log ""
 log "═══════════════════════════════════════════════════════════"
 log "${YELLOW}Next Steps to Enable Network-Wide Blocking:${NC}"
@@ -366,7 +421,7 @@ log "═════════════════════════
 log ""
 log "1. ${GREEN}Log into your router's admin interface${NC}"
 log "2. ${GREEN}Find DNS settings (often under DHCP or WAN settings)${NC}"
-log "3. ${GREEN}Set Primary DNS to: ${BLUE}$CURRENT_IP${NC}"
+log "3. ${GREEN}Set Primary DNS to: ${BLUE}$CURRENT_IP${NC} (${CHOSEN_IFACE})"
 log "4. ${GREEN}Set Secondary DNS to: ${BLUE}$CURRENT_IP${NC} (or another DNS)"
 log "5. ${GREEN}Save settings and reboot router${NC}"
 log "6. ${GREEN}Reboot your devices or wait for DHCP renewal${NC}"
