@@ -1,113 +1,118 @@
 #!/bin/bash
 
-# --- Color Codes for better readability ---
+# --- Color Codes ---
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# --- Function to check if running as root ---
-check_root() {
-  if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Error:${NC} This script must be run with root privileges."
-    echo -e "Please run it with: ${GREEN}sudo ./install_pihole.sh${NC}"
-    exit 1
-  fi
+LOG_FILE="/var/log/pihole-install-techposts.log"
+
+# --- Logging Function ---
+log() {
+    echo -e "$1" | tee -a "$LOG_FILE"
 }
 
-# --- Welcome and Warning ---
+# --- Check Root ---
+if [ "$EUID" -ne 0 ]; then
+    log "${RED}Error:${NC} This script must be run as root."
+    log "Use: sudo $0"
+    exit 1
+fi
+
 clear
-echo -e "${GREEN}=======================================${NC}"
-echo -e "${GREEN}  TechPosts Pi-hole Setup Script      ${NC}"
-echo -e "${GREEN}=======================================${NC}"
-echo ""
-echo -e "${YELLOW}Welcome!${NC} This script will prepare your system and launch"
-echo "the official Pi-hole installer."
-echo ""
-echo -e "${RED}--- IMPORTANT HARDWARE NOTE ---${NC}"
-echo -e "You are installing on a ${YELLOW}Raspberry Pi Zero${NC}."
-echo "For best performance, it is highly recommended that you use:"
-echo -e "1. ${GREEN}Raspberry Pi OS Lite${NC} (a headless, non-desktop version)."
-echo "2. A high-quality SD card and power supply."
-echo ""
+log "${GREEN}=======================================${NC}"
+log "${GREEN}  TechPosts Pi-hole Setup Script      ${NC}"
+log "${GREEN}=======================================${NC}"
+log ""
+log "${YELLOW}Welcome!${NC} This script will prepare your system and launch the official Pi-hole installer."
+log ""
+log "${RED}NOTE:${NC} Optimized for Pi-hole v6+ (FTL web server)."
 
 # --- Confirmation Prompt ---
-read -p "Do you wish to continue with the installation? (y/n): " confirm
+read -p "Do you wish to continue? (y/n): " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo -e "${RED}Installation aborted by user.${NC}"
+    log "${RED}Installation aborted by user.${NC}"
     exit 0
 fi
 
-# --- Check for Root ---
-# We check for root *after* the intro so the user sees the welcome message.
-check_root
-
 # --- Step 1: System Update ---
-echo ""
-echo -e "${GREEN}--- Step 1: Updating System Packages ---${NC}"
-echo "This will update your package lists and upgrade existing software."
-echo "This may take several minutes on a Pi Zero..."
-echo ""
-apt update
-apt upgrade -y
-echo ""
-echo -e "${GREEN}System update complete.${NC}"
-echo ""
+log "${GREEN}--- Updating System Packages ---${NC}"
+apt update && apt upgrade -y
+log "${GREEN}System update complete.${NC}"
 
-# --- Step 2: Static IP Address (Interactive Check) ---
-echo -e "${GREEN}--- Step 2: Static IP Address Check ---${NC}"
-echo -e "${YELLOW}CRITICAL:${NC} Pi-hole ${RED}REQUIRES${NC} a static IP address to work."
-echo ""
-echo "You have two main options:"
-echo -e "  1. ${GREEN}DHCP Reservation (Recommended):${NC} Log in to your router and 'reserve'"
-echo "     an IP address for your Pi's MAC address. This is the cleanest method."
-echo -e "  2. ${GREEN}Manual IP (On-Device):${NC} Set the static IP directly on the Pi."
-echo ""
-echo "The official Pi-hole installer (which runs next) will ask you about this."
-echo -e "If you choose option 2, you ${YELLOW}must${NC} know the following:"
-echo "  - The IP you want to assign to the Pi (e.g., 192.168.1.10)"
-echo "  - Your Router's IP address (Gateway) (e.g., 192.168.1.1)"
-echo ""
-
-read -p "Are you prepared to configure the static IP? (y/n): " ip_ready
+# --- Step 2: Static IP Warning ---
+log "${GREEN}--- Static IP Check ---${NC}"
+log "${YELLOW}CRITICAL:${NC} Pi-hole requires a static IP."
+log "Options:"
+log " 1. DHCP reservation on router (recommended)"
+log " 2. Manual static IP on device"
+log ""
+read -p "Are you ready to configure static IP if needed? (y/n): " ip_ready
 if [[ "$ip_ready" != "y" && "$ip_ready" != "Y" ]]; then
-    echo -e "${RED}Installation aborted.${NC} Please configure your network settings first."
+    log "${RED}Installation aborted. Please configure network first.${NC}"
     exit 1
 fi
 
-# --- Step 3: Run the Official Pi-hole Installer ---
-echo ""
-echo -e "${GREEN}--- Step 3: Launching Official Pi-hole Installer ---${NC}"
-echo "The script will now download and execute the official installer."
-echo ""
-echo -e "${YELLOW}This next part is INTERACTIVE.${NC}"
-echo "Follow the on-screen prompts to select your DNS provider, blocklists,"
-echo "and confirm your static IP settings."
-echo ""
-echo "Starting in 5 seconds..."
-sleep 5
+# --- Step 3: Detect Port 80 Conflict ---
+log "${GREEN}--- Checking Port 80 ---${NC}"
+if ss -tulpn | grep -q ":80 "; then
+    log "${YELLOW}Port 80 is in use. A web server (Apache/Nginx/etc.) detected.${NC}"
+    read -p "Do you want to move Pi-hole admin GUI to port 8080? (y/n): " move_port
+    if [[ "$move_port" == "y" || "$move_port" == "Y" ]]; then
+        PORT_CHANGE="yes"
+    else
+        PORT_CHANGE="no"
+        log "${YELLOW}Warning: Pi-hole admin may not be accessible until port is free or changed manually.${NC}"
+    fi
+else
+    PORT_CHANGE="no"
+fi
 
-# The official command to run the installer
+# --- Step 4: Run Pi-hole Installer ---
+log "${GREEN}--- Running Pi-hole Installer ---${NC}"
+log "Follow on-screen prompts."
 curl -sSL https://install.pi-hole.net | bash
 
-# --- Step 4: Post-Installation Summary ---
-echo ""
-echo -e "${GREEN}=======================================${NC}"
-echo -e "${GREEN}  Pi-hole Installation Finished!       ${NC}"
-echo -e "${GREEN}=======================================${NC}"
-echo ""
-echo "The installer should have shown you a final screen with:"
-echo "  - The web interface URL (e.g., http://pi.hole/admin or http://[IP_ADDRESS]/admin)"
-echo -e "  - Your web interface ${YELLOW}password${NC}"
-echo ""
-echo -e "${YELLOW}IMPORTANT:${NC} If you missed the password or want to change it, run:"
-echo -e "  ${GREEN}pihole -a -p${NC}"
-echo ""
-echo "--- YOUR FINAL, CRITICAL STEP ---"
-echo "To make your whole network use Pi-hole, you must:"
-echo -e "1. Log in to your ${YELLOW}router's${NC} admin page."
-echo -e "2. Find the ${GREEN}DHCP/DNS${NC} settings."
-echo -e "3. Change the ${GREEN}Primary DNS Server${NC} to your Pi-hole's static IP address."
-echo "4. Save and restart your router."
-echo ""
-echo -e "${GREEN}Setup complete!${NC} Your network is now protected."
+# --- Step 5: Handle Port Change if Accepted ---
+if [[ "$PORT_CHANGE" == "yes" ]]; then
+    log "${GREEN}--- Changing Pi-hole Web GUI Port to 8080 ---${NC}"
+    TOML_FILE="/etc/pihole/pihole.toml"
+    if [ -f "$TOML_FILE" ]; then
+        sed -i 's/port = .*/port = "8080o,443os,[::]:8080o,[::]:443os"/' "$TOML_FILE"
+        systemctl restart pihole-FTL
+        log "${GREEN}Port changed successfully. Admin GUI now on http://<IP>:8080/admin${NC}"
+    else
+        log "${RED}Error:${NC} pihole.toml not found. Manual port change required."
+    fi
+fi
+
+# --- Step 6: Set/Reset Admin Password ---
+log "${GREEN}--- Setting Admin Web Password ---${NC}"
+pihole -a -p
+
+# --- Step 7: Final Instructions ---
+log ""
+log "${GREEN}=======================================${NC}"
+log "${GREEN}  Pi-hole Installation Finished!       ${NC}"
+log "${GREEN}=======================================${NC}"
+log ""
+log "Access your admin interface:"
+if [[ "$PORT_CHANGE" == "yes" ]]; then
+    log "  http://<Your-Pi-IP>:8080/admin"
+else
+    log "  http://pi.hole/admin or http://<Your-Pi-IP>/admin"
+fi
+log ""
+log "${YELLOW}If admin page is inaccessible:${NC}"
+log "  1. Check for web server on port 80"
+log "  2. Edit /etc/pihole/pihole.toml and change port to 8080"
+log "  3. Restart Pi-hole FTL: sudo systemctl restart pihole-FTL"
+log ""
+log "${GREEN}To enable network-wide blocking:${NC}"
+log "  1. Log into router admin"
+log "  2. Set Primary DNS to Pi-hole's static IP"
+log "  3. Save & reboot router"
+log ""
+log "${GREEN}✅ Setup Complete!${NC} Your network is now protected."
+log ""
