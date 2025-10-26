@@ -18,7 +18,7 @@ check_root() {
 # --- Welcome and Warning ---
 clear
 echo -e "${GREEN}=======================================${NC}"
-echo -e "${GREEN}  Anaptyss Pi-hole Setup Script      ${NC}"
+echo -e "${GREEN}  TechPosts Pi-hole Setup Script      ${NC}"
 echo -e "${GREEN}=======================================${NC}"
 echo ""
 echo -e "${YELLOW}Welcome!${NC} This script will prepare your system and launch"
