@@ -440,7 +440,7 @@ log "${GREEN}--- Step 9: Setting Admin Web Password ---${NC}"
 log "You'll now set the password for the Pi-hole web interface."
 log ""
 sleep 2
-pihole -a -p
+pihole setpassword
 
 # --- Step 10: Verify Installation ---
 log ""
